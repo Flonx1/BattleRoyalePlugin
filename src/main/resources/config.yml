@@ -1,0 +1,18 @@
+lang: en
+timers:
+  lobby-countdown: 300
+  freeze-time: 30
+  border-shrink-start: 600
+  border-shrink-duration: 300
+  restart-delay: 200
+economy:
+  kill-reward: 10
+  win-reward: 100
+world:
+  name: arena_world
+  lobby-size: 50
+  arena-size: 1000
+  final-size: 50
+
+# The time are written in seconds.
+# Supports English, German, Russian
