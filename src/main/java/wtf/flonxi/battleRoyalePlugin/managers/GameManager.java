@@ -6,8 +6,10 @@ import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 import wtf.flonxi.battleRoyalePlugin.BattleRoyalePlugin;
 import wtf.flonxi.battleRoyalePlugin.GameState;
+import wtf.flonxi.battleRoyalePlugin.tasks.AirdropTask;
 
 import java.io.File;
 import java.util.*;
@@ -18,25 +20,66 @@ public class GameManager {
     private GameState state;
     private int countdown;
     private BukkitRunnable startingTask;
+    private BukkitTask airdropTask;
+    private BukkitTask borderDamageTask;
+    private BukkitTask generatorTask;
     private World gameWorld;
-    private final String WORLD_NAME;
+    private final String WORLD_NAME_BASE;
 
     public GameManager(BattleRoyalePlugin plugin) {
         this.plugin = plugin;
         this.state = GameState.LOBBY;
-        this.WORLD_NAME = plugin.getConfig().getString("world.name", "arena_world");
+        this.WORLD_NAME_BASE = plugin.getConfig().getString("world.name-base", "arena_world");
         this.countdown = plugin.getConfig().getInt("timers.lobby-countdown");
     }
 
-    public void createNewGameWorld() {
-        Bukkit.unloadWorld(WORLD_NAME, false);
-        File worldFolder = new File(Bukkit.getWorldContainer(), WORLD_NAME);
-        deleteWorldFolder(worldFolder);
+    public void createNewGameWorld(boolean teleportPlayers) {
+        if (startingTask != null) startingTask.cancel();
+        if (airdropTask != null) airdropTask.cancel();
+        if (borderDamageTask != null) borderDamageTask.cancel();
+        if (generatorTask != null) generatorTask.cancel();
+        
+        if (gameWorld != null) {
+            String worldName = gameWorld.getName();
+            
+            for (Player p : gameWorld.getPlayers()) {
+                p.teleport(Bukkit.getWorlds().get(0).getSpawnLocation());
+            }
+            
+            Bukkit.unloadWorld(gameWorld, false);
+            File worldFolder = new File(Bukkit.getWorldContainer(), worldName);
+            deleteWorldFolder(worldFolder);
+            gameWorld = null;
+        }
 
-        WorldCreator creator = new WorldCreator(WORLD_NAME);
+        String newWorldName = WORLD_NAME_BASE + "_" + System.currentTimeMillis();
+        WorldCreator creator = new WorldCreator(newWorldName);
         creator.seed(new Random().nextLong());
         gameWorld = Bukkit.createWorld(creator);
-        gameWorld.setAutoSave(false);
+        
+        if (gameWorld != null) {
+            gameWorld.setAutoSave(false);
+            gameWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
+            gameWorld.setTime(6000);
+        }
+        
+        if (teleportPlayers && gameWorld != null) {
+            setupLobby();
+            Location lobbySpawn = new Location(gameWorld, 0.5, 151, 0.5);
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                p.teleport(lobbySpawn);
+                p.setGameMode(GameMode.ADVENTURE);
+                p.getInventory().clear();
+                p.setHealth(20);
+                p.setFoodLevel(20);
+            }
+            state = GameState.LOBBY;
+            checkStart();
+        }
+    }
+    
+    public void createNewGameWorld() {
+        createNewGameWorld(false);
     }
 
     private void deleteWorldFolder(File path) {
@@ -64,17 +107,29 @@ public class GameManager {
         border.setSize(lobbySize);
         border.setDamageAmount(0);
 
+        int startY = 150;
+        int height = 6; 
+
         for (int x = -lobbySize; x <= lobbySize; x++) {
             for (int z = -lobbySize; z <= lobbySize; z++) {
-                gameWorld.getBlockAt(x, 150, z).setType(Material.GLASS);
+                
+                gameWorld.getBlockAt(x, startY, z).setType(Material.GLASS);
+
+                gameWorld.getBlockAt(x, startY + height, z).setType(Material.GLASS);
+
+                if (x == -lobbySize || x == lobbySize || z == -lobbySize || z == lobbySize) {
+                    for (int y = 1; y < height; y++) {
+                        gameWorld.getBlockAt(x, startY + y, z).setType(Material.GLASS);
+                    }
+                }
             }
         }
     }
 
     public void checkStart() {
         if (state != GameState.LOBBY) return;
-        if (Bukkit.getOnlinePlayers().size() >= 2) {
-            if (startingTask == null) {
+        if (Bukkit.getOnlinePlayers().size() >= plugin.getConfig().getInt("game-settings.min-players", 2)) {
+            if (startingTask == null || (startingTask != null && startingTask.isCancelled())) {
                 state = GameState.STARTING;
                 startCountdown();
             }
@@ -82,10 +137,11 @@ public class GameManager {
     }
 
     private void startCountdown() {
+        countdown = plugin.getConfig().getInt("timers.lobby-countdown");
         startingTask = new BukkitRunnable() {
             @Override
             public void run() {
-                if (Bukkit.getOnlinePlayers().size() < 2) {
+                if (Bukkit.getOnlinePlayers().size() < plugin.getConfig().getInt("game-settings.min-players", 2)) {
                     state = GameState.LOBBY;
                     countdown = plugin.getConfig().getInt("timers.lobby-countdown");
                     broadcastActionBar(plugin.getConfigManager().getMessage("not-enough-players"));
@@ -97,6 +153,7 @@ public class GameManager {
                 if (countdown <= 0) {
                     startGame();
                     cancel();
+                    startingTask = null;
                     return;
                 }
 
@@ -114,6 +171,12 @@ public class GameManager {
 
     public void startGame() {
         state = GameState.FROZEN;
+        int arenaSize = plugin.getConfig().getInt("world.arena-size");
+
+        startWorldPreGeneration(arenaSize, this::continueGameStart);
+    }
+    
+    private void continueGameStart() {
         plugin.getTeamManager().assignTeams();
         
         int arenaSize = plugin.getConfig().getInt("world.arena-size");
@@ -123,7 +186,7 @@ public class GameManager {
         border.setWarningDistance(5);
 
         teleportPlayersToArena();
-
+        
         new BukkitRunnable() {
             int freezeTime = plugin.getConfig().getInt("timers.freeze-time");
             @Override
@@ -133,7 +196,8 @@ public class GameManager {
                     Bukkit.broadcastMessage(plugin.getConfigManager().getMessage("game-started"));
                     broadcastActionBar(plugin.getConfigManager().getMessage("combat-actionbar"));
                     startShrinkTimer();
-                    startBorderDamageTask(); 
+                    startBorderDamageTask();
+                    startAirdropTask();
                     cancel();
                     return;
                 }
@@ -149,9 +213,70 @@ public class GameManager {
             }
         }.runTaskTimer(plugin, 0L, 20L);
     }
+    
+    private void startWorldPreGeneration(int size, Runnable onComplete) {
+        if (gameWorld == null) {
+            onComplete.run(); 
+            return;
+        }
+        
+        if (generatorTask != null) generatorTask.cancel();
+        
+        final int radius = (size / 2) + 100;
+        final int chunks = radius / 16; 
+        final int totalChunks = (chunks * 2 + 1) * (chunks * 2 + 1); 
+
+        Bukkit.broadcastMessage(plugin.getConfigManager().getMessage("world-gen-start").replace("%size%", String.valueOf(size)));
+        
+        generatorTask = new BukkitRunnable() {
+            private int currentChunkX = -chunks;
+            private int currentChunkZ = -chunks;
+            private int processedChunks = 0;
+            
+            @Override
+            public void run() {
+                if (processedChunks >= totalChunks) {
+                    Bukkit.broadcastMessage(plugin.getConfigManager().getMessage("world-gen-complete")); 
+                    onComplete.run();
+                    cancel();
+                    generatorTask = null;
+                    return;
+                }
+
+                int chunksPerTick = 4;
+                for (int i = 0; i < chunksPerTick; i++) {
+                    
+                    if (currentChunkX > chunks) {
+                        break; 
+                    }
+
+                    gameWorld.loadChunk(currentChunkX, currentChunkZ, true); 
+                    processedChunks++;
+                    currentChunkZ++;
+
+                    if (currentChunkZ > chunks) {
+                        currentChunkX++;
+                        currentChunkZ = -chunks;
+                    }
+                }
+                
+                if (processedChunks > 0 && (processedChunks % 200 == 0 || processedChunks == totalChunks)) {
+                    int percent = (int) (((double) processedChunks / totalChunks) * 100);
+                    Bukkit.broadcastMessage(plugin.getConfigManager().getMessage("world-gen-progress").replace("%percent%", String.valueOf(percent)));
+                }
+            }
+        }.runTaskTimer(plugin, 0L, 1L);
+    }
+    
+    private void startAirdropTask() {
+        if (airdropTask != null) airdropTask.cancel();
+        airdropTask = new AirdropTask(plugin).runTaskTimer(plugin, 0L, 20L);
+    }
+
 
     private void startBorderDamageTask() {
-        new BukkitRunnable() {
+        if (borderDamageTask != null) borderDamageTask.cancel();
+        borderDamageTask = new BukkitRunnable() {
             @Override
             public void run() {
                 if (state != GameState.PLAYING) {
@@ -208,13 +333,13 @@ public class GameManager {
             
             Block block = gameWorld.getBlockAt(x, y, z);
             
-            if (!block.isLiquid()) {
-                return new Location(gameWorld, x, y + 1, z);
+            if (!block.isLiquid() && block.getType() != Material.AIR) {
+                return new Location(gameWorld, x + 0.5, y + 1, z + 0.5);
             }
             attempts++;
         }
         
-        return new Location(gameWorld, 0, gameWorld.getHighestBlockYAt(0, 0) + 1, 0);
+        return new Location(gameWorld, 0.5, gameWorld.getHighestBlockYAt(0, 0) + 1, 0.5);
     }
 
     private void startShrinkTimer() {
@@ -238,7 +363,7 @@ public class GameManager {
 
         List<String> aliveTeams = new ArrayList<>();
         for (Player p : Bukkit.getOnlinePlayers()) {
-            if (p.getGameMode() == GameMode.SURVIVAL) {
+            if (p.getGameMode() == GameMode.SURVIVAL && p.getWorld().equals(gameWorld)) {
                 String team = plugin.getTeamManager().getPlayerTeam(p.getUniqueId());
                 if (team != null && !aliveTeams.contains(team)) {
                     aliveTeams.add(team);
@@ -247,34 +372,42 @@ public class GameManager {
         }
 
         if (aliveTeams.size() <= 1) {
-            state = GameState.ENDING;
-            if (aliveTeams.size() == 1) {
-                String winningTeam = aliveTeams.get(0);
-                Bukkit.broadcastMessage(ChatColor.GOLD + "=============================");
-                Bukkit.broadcastMessage(plugin.getConfigManager().getMessage("win-broadcast").replace("%team%", winningTeam));
-                Bukkit.broadcastMessage(ChatColor.GOLD + "=============================");
-                
-                List<UUID> members = plugin.getTeamManager().getTeams().get(winningTeam);
-                if (members != null) {
-                    int winReward = plugin.getConfig().getInt("economy.win-reward");
-                    for (UUID uuid : members) {
-                        plugin.getEconomyManager().addCoins(uuid, winReward);
-                        Player p = Bukkit.getPlayer(uuid);
-                        if (p != null) p.sendMessage(plugin.getConfigManager().getMessage("win-reward").replace("%amount%", String.valueOf(winReward)));
-                    }
-                }
-            } else {
-                Bukkit.broadcastMessage(plugin.getConfigManager().getMessage("no-winner"));
-            }
-            
-            long delay = plugin.getConfig().getInt("timers.restart-delay");
-            new BukkitRunnable() {
-                @Override
-                public void run() {
-                    Bukkit.getServer().shutdown();
-                }
-            }.runTaskLater(plugin, delay);
+            endGame(aliveTeams.size() == 1 ? aliveTeams.get(0) : null);
         }
+    }
+    
+    public void endGame(String winnerTeam) {
+        state = GameState.ENDING;
+        
+        if (airdropTask != null) airdropTask.cancel();
+        if (borderDamageTask != null) borderDamageTask.cancel();
+        if (generatorTask != null) generatorTask.cancel();
+
+        if (winnerTeam != null) {
+            Bukkit.broadcastMessage(ChatColor.GOLD + "=============================");
+            Bukkit.broadcastMessage(plugin.getConfigManager().getMessage("win-broadcast").replace("%team%", winnerTeam));
+            Bukkit.broadcastMessage(ChatColor.GOLD + "=============================");
+            
+            List<UUID> members = plugin.getTeamManager().getTeams().get(winnerTeam);
+            if (members != null) {
+                int winReward = plugin.getConfig().getInt("economy.win-reward");
+                for (UUID uuid : members) {
+                    plugin.getEconomyManager().addCoins(uuid, winReward);
+                    Player p = Bukkit.getPlayer(uuid);
+                    if (p != null) p.sendMessage(plugin.getConfigManager().getMessage("win-reward").replace("%amount%", String.valueOf(winReward)));
+                }
+            }
+        } else {
+            Bukkit.broadcastMessage(plugin.getConfigManager().getMessage("no-winner"));
+        }
+        
+        long delay = plugin.getConfig().getInt("timers.restart-delay");
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                createNewGameWorld(true);
+            }
+        }.runTaskLater(plugin, delay * 20L); 
     }
 
     private void broadcastActionBar(String message) {
@@ -285,8 +418,16 @@ public class GameManager {
     }
 
     public void cleanup() {
+        if (startingTask != null) startingTask.cancel();
+        if (airdropTask != null) airdropTask.cancel();
+        if (borderDamageTask != null) borderDamageTask.cancel();
+        if (generatorTask != null) generatorTask.cancel();
+        
         if (gameWorld != null) {
+            String worldName = gameWorld.getName();
             Bukkit.unloadWorld(gameWorld, false);
+            File worldFolder = new File(Bukkit.getWorldContainer(), worldName);
+            deleteWorldFolder(worldFolder);
         }
     }
 
