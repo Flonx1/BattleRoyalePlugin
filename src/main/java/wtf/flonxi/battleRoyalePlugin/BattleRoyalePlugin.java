@@ -5,6 +5,7 @@ import wtf.flonxi.battleRoyalePlugin.listeners.GameListener;
 import wtf.flonxi.battleRoyalePlugin.managers.ConfigManager;
 import wtf.flonxi.battleRoyalePlugin.managers.EconomyManager;
 import wtf.flonxi.battleRoyalePlugin.managers.GameManager;
+import wtf.flonxi.battleRoyalePlugin.managers.LootManager;
 import wtf.flonxi.battleRoyalePlugin.managers.TeamManager;
 
 import java.io.File;
@@ -15,8 +16,9 @@ public final class BattleRoyalePlugin extends JavaPlugin {
     private TeamManager teamManager;
     private EconomyManager economyManager;
     private ConfigManager configManager;
+    private LootManager lootManager;
     String version = "1.0";
-    String lastUpdate = "27.11.2025";
+    String lastUpdate = "05.12.2025";
     @Override
     public void onEnable() {
         getLogger().info("\nStarting BattleRoyalePlugin...\nCreator: Flonxi\nVersion: " + version + "\nLast update - " + lastUpdate);
@@ -27,6 +29,7 @@ public final class BattleRoyalePlugin extends JavaPlugin {
         this.configManager = new ConfigManager(this);
         this.economyManager = new EconomyManager();
         this.teamManager = new TeamManager(this);
+        this.lootManager = new LootManager(this);
         this.gameManager = new GameManager(this);
 
         gameManager.createNewGameWorld();
@@ -75,5 +78,9 @@ public final class BattleRoyalePlugin extends JavaPlugin {
 
     public ConfigManager getConfigManager() {
         return configManager;
+    }
+
+    public LootManager getLootManager() {
+        return lootManager;
     }
 }

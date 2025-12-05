@@ -29,7 +29,7 @@ public class GameListener implements Listener {
         World world = plugin.getGameManager().getGameWorld();
         
         player.setGameMode(GameMode.ADVENTURE);
-        player.teleport(new Location(world, 0, 151, 0));
+        player.teleport(new Location(world, 0.5, 151, 0.5));
         player.getInventory().clear();
         player.setHealth(20);
         player.setFoodLevel(20);
